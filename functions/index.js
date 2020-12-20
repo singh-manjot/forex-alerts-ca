@@ -1,62 +1,86 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
+const puppeteer = require("puppeteer");
+const { default: Axios } = require("axios");
+const scrapeIt = require("scrape-it");
+
 admin.initializeApp();
+let conversionsToLook = {
+  CAD: "INR",
+};
 
-// // Create and Deploy Your First Cloud Functions
-// // https://firebase.google.com/docs/functions/write-firebase-functions
-//
-// exports.helloWorld = functions.https.onRequest((request, response) => {
-//   functions.logger.info("Hello logs!", {structuredData: true});
-//   response.send("Hello from Firebase!");
-// });
-
-// Take the text parameter passed to this HTTP endpoint and insert it into
-// Cloud Firestore under the path /messages/:documentId/original
-exports.addMessage = functions.https.onRequest(async (req, res) => {
-  // Grab the text parameter.
-  const original = req.query.text;
-  // Push the new message into Cloud Firestore using the Firebase Admin SDK.
-  const writeResult = await admin
-    .firestore()
-    .collection("messages")
-    .add({ original: original });
-  // Send back a message that we've successfully written the message
-  res.json({ result: `Message with ID: ${writeResult.id} added.` });
-});
-
-// Write own UpperCase function
-exports.makeUpperCase = functions.firestore
-  .document("/messages/{documentId}")
-  .onCreate((snap, context) => {
-    // Get the original value
-    const value = snap.data().original;
-
-    // Logging
-    functions.logger.log(
-      "Uppercase document ID: ",
-      context.params.documentId,
-      value
-    );
-
-    const uppercaseValue = value.toUpperCase();
-
-    /* Take the snap which is the recently entered data, adds or "sets"
-     * a property "capsValue" with value uppercaseValue
-     */
-    return snap.ref.set({ capsValue: uppercaseValue }, { merge: true });
+// Get Market data
+async function getMarketRate() {
+  let queryParam = "";
+  Object.keys(conversionsToLook).forEach((key) => {
+    queryParam +=
+      key.toString().toUpperCase() +
+      "_" +
+      conversionsToLook[key].toString().toUpperCase();
   });
 
-// Try a delete endpoint
-exports.deleteAllMessages = functions.https.onRequest(async (req, res) => {
-  // const note = req.query.note;
-  await admin
-    .firestore()
-    .collection("messages/")
-    .listDocuments()
-    .then((documentRefs) => {
-      for (let ref of documentRefs) {
-        ref.delete();
-      }
-    });
-  res.json({ result: "Done" });
+  const data = await Axios.get(
+    `https://free.currconv.com/api/v7/convert?apiKey=9a64e33b2844d9ec0c63&q=${queryParam}&compact=ultra` // use env here
+  ).then((responseData) => {
+    return responseData.data;
+  });
+
+  // response.json({ marketRate: data[queryParam] });
+  return data[queryParam];
+}
+
+async function getMoneyGramRate() {
+  const browser = await puppeteer.launch();
+  const page = await browser.newPage();
+
+  const userAgent =
+    "Mozilla/5.0 (X11; Linux x86_64)" +
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/64.0.3282.39 Safari/537.36";
+  await page.setUserAgent(userAgent);
+  await page.goto("https://www.moneygram.com/mgo/ca/en/", {
+    waitUntil: "domcontentloaded",
+    timeout: 30000,
+  });
+  await page.waitForSelector("#send");
+  await page.evaluate(() => {
+    try {
+      document.querySelector("#truste-consent-track").style.display = "none";
+    } catch (e) {
+      console.log("Could not hide the consent footer!!");
+    }
+  });
+  await page.evaluate(() => {
+    try {
+      document.querySelector(".cdk-overlay-container").style.display = "none";
+    } catch (e) {
+      console.log("Could not hide the modal!!");
+    }
+  });
+
+  const sendAmountInput = await page.$("#send");
+  await sendAmountInput.click({ clickCount: 3 });
+  await sendAmountInput.type("1");
+
+  const receiverCountryInput = await page.$("#receiveCountry");
+  await receiverCountryInput.type("India");
+
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
+
+  // await page.screenshot({ path: "example.png" });
+
+  await page.waitForSelector("#receiveAmount");
+  const mgRate = await page.evaluate(() => {
+    return document.querySelector("#receiveAmount").value;
+  });
+  await browser.close();
+
+  return mgRate;
+}
+
+exports.getBothRates = functions.https.onRequest(async (req, response) => {
+  const mgRate = await getMoneyGramRate();
+  const marketRate = await getMarketRate();
+
+  response.json({ mgRate: mgRate, marketRate: marketRate });
 });
