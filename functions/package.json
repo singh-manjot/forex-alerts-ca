@@ -18,7 +18,8 @@
     "firebase-admin": "^9.2.0",
     "firebase-functions": "^3.11.0",
     "puppeteer": "^5.5.0",
-    "scrape-it": "^5.2.4"
+    "scrape-it": "^5.2.4",
+    "twilio": "^3.54.1"
   },
   "devDependencies": {
     "eslint": "^5.12.0",

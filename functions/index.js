@@ -3,11 +3,17 @@ const admin = require("firebase-admin");
 const puppeteer = require("puppeteer");
 const { default: Axios } = require("axios");
 const scrapeIt = require("scrape-it");
+const { firestore } = require("firebase-admin");
 
 admin.initializeApp();
-let conversionsToLook = {
+
+const conversionsToLook = {
   CAD: "INR",
 };
+
+const CA_COUNTRY_CODE = "+1";
+const PERSONAL_NUMBER = "2368823713";
+const TWILIO_NUMBER = "7787215623";
 
 // Get Market data
 async function getMarketRate() {
@@ -79,8 +85,43 @@ async function getMoneyGramRate() {
 }
 
 exports.getBothRates = functions.https.onRequest(async (req, response) => {
-  const mgRate = await getMoneyGramRate();
-  const marketRate = await getMarketRate();
+  let mgRate = await getMoneyGramRate();
+  let marketRate = await getMarketRate();
 
-  response.json({ mgRate: mgRate, marketRate: marketRate });
+  marketRate = marketRate.toPrecision(4);
+  mgRate = Number(mgRate).toPrecision(4);
+
+  const rateDiff = (marketRate - mgRate).toPrecision(3);
+
+  if (rateDiff < 0.75) {
+    let standardMessage = `Market Rate: Rs.${marketRate}, MoneyGram Rate: Rs.${mgRate}(Rate diff:${rateDiff}). `;
+
+    if (rateDiff < 0.5) {
+      ///store doc
+      const result = await admin
+        .firestore()
+        .collection("forex-rates")
+        .add({ marketRate, moneyGramRate: mgRate, rateDiff });
+
+      standardMessage += `Stored data in Firestore document ${result.id}`;
+    }
+
+    await sendSMS(standardMessage);
+  }
+
+  response.json({ diff: rateDiff, marketRate, mgRate });
 });
+
+async function sendSMS(message = null) {
+  const accountSid = "AC257e59dd88d5194a4918038146b5892c";
+  const authToken = "c6e7d9c7d4899b3b2646d9fe1ddd0171";
+  const client = require("twilio")(accountSid, authToken);
+
+  client.messages
+    .create({
+      body: message ?? "This is a test message, eh?",
+      from: CA_COUNTRY_CODE + TWILIO_NUMBER,
+      to: CA_COUNTRY_CODE + PERSONAL_NUMBER,
+    })
+    .then((message) => console.log("Message sent with SID: " + message.sid));
+}
