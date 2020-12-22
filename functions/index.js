@@ -2,61 +2,88 @@ const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const puppeteer = require("puppeteer");
 const { default: Axios } = require("axios");
-const scrapeIt = require("scrape-it");
-const { firestore } = require("firebase-admin");
-
 admin.initializeApp();
-
-const conversionsToLook = {
-  CAD: "INR",
-};
 
 const CA_COUNTRY_CODE = "+1";
 const PERSONAL_NUMBER = "2368823713";
 const TWILIO_NUMBER = "7787215623";
 
+exports.lookUpMarketRates = functions.pubsub
+  .schedule("15 8 * * *")
+  .onRun(async () => {
+
+    const mgRate = await getMoneyGramRate();
+    const marketRate = await getMarketRate();
+
+    const rateDiff = (marketRate - mgRate).toPrecision(3);
+
+    let standardMessage = `Market Rate: Rs.${marketRate}, MoneyGram Rate: Rs.${mgRate}(Rate diff:${rateDiff}). `;
+
+    if (rateDiff < 0.5) {
+      console.log("Storing Rates...");
+      storeRates(marketRate, mgRate, rateDiff);
+      standardMessage += "Results stored in Firebase.";
+    }
+
+    if (rateDiff < 0.75) {
+      console.log(`Rate difference is good(${rateDiff}), sending SMS...`);
+      return sendSMS(standardMessage);
+    } else {
+      console.log("Rate Difference not good enough, no SMS sent.");
+      return 0;
+    }
+  });
+
+const storeRates = async (marketRate, moneyGramRate, rateDiff) => {
+  ///store document
+  await admin
+    .firestore()
+    .collection("forex-rates")
+    .add({ marketRate, moneyGramRate, rateDiff });
+};
+
 // Get Market data
-async function getMarketRate() {
-  let queryParam = "";
-  Object.keys(conversionsToLook).forEach((key) => {
-    queryParam +=
-      key.toString().toUpperCase() +
-      "_" +
-      conversionsToLook[key].toString().toUpperCase();
-  });
-
+const getMarketRate = async () => {
   const data = await Axios.get(
-    `https://free.currconv.com/api/v7/convert?apiKey=9a64e33b2844d9ec0c63&q=${queryParam}&compact=ultra` // use env here
-  ).then((responseData) => {
-    return responseData.data;
+    `https://api.ratesapi.io/api/latest?base=CAD&symbols=INR`
+  )
+    .then((responseData) => {
+      return responseData.data.rates;
+    })
+    .catch((err) => {
+      console.log("ERROR: ", err);
+    });
+
+  return data["INR"].toPrecision(4);
+};
+
+// Get MoneyGram Rate
+const getMoneyGramRate = async () => {
+  const browser = await puppeteer.launch({
+    //running chrome as root is not supported directly
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
-
-  return data[queryParam];
-}
-
-async function getMoneyGramRate() {
-  const browser = await puppeteer.launch();
   const page = await browser.newPage();
 
   const userAgent =
     "Mozilla/5.0 (X11; Linux x86_64)" +
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/64.0.3282.39 Safari/537.36";
   await page.setUserAgent(userAgent);
-  await page.goto("https://www.moneygram.com/mgo/ca/en/", {
+  await page.goto(functions.config().forex_site.url, {
     waitUntil: "domcontentloaded",
     timeout: 30000,
   });
 
   await page.waitForSelector("#send");
 
-  await page.evaluate(() => {
+  page.evaluate(() => {
     try {
       document.querySelector("#truste-consent-track").style.display = "none";
     } catch (e) {
       console.log("Could not hide the consent footer!!");
     }
   });
-  await page.evaluate(() => {
+  page.evaluate(() => {
     try {
       document.querySelector(".cdk-overlay-container").style.display = "none";
     } catch (e) {
@@ -82,54 +109,15 @@ async function getMoneyGramRate() {
 
   await browser.close();
 
-  return mgRate;
-}
+  return Number(mgRate).toPrecision(4);
+};
 
-exports.lookUpMarketRates = functions.pubsub
-  .schedule("15 8 * * *")
-  .onRun(async () => {
-    console.log("Beginning Scheduled Function..");
+const sendSMS = async (messageBody) => {
+  const client = require("twilio")(functions.config().twilio.account_sid, functions.config().twilio.auth_token);
 
-    let mgRate = await getMoneyGramRate();
-    let marketRate = await getMarketRate();
-
-    marketRate = marketRate.toPrecision(4);
-    mgRate = Number(mgRate).toPrecision(4);
-
-    const rateDiff = (marketRate - mgRate).toPrecision(3);
-
-    if (rateDiff < 0.75) {
-      let standardMessage = `Market Rate: Rs.${marketRate}, MoneyGram Rate: Rs.${mgRate}(Rate diff:${rateDiff}). `;
-
-      if (rateDiff < 0.5) {
-        ///store doc
-        const result = await admin
-          .firestore()
-          .collection("forex-rates")
-          .add({ marketRate, moneyGramRate: mgRate, rateDiff });
-
-        standardMessage += `Stored data in Firestore document ${result.id}`;
-      }
-
-      await sendSMS(standardMessage);
-    }
-    console.log("Ending Scheduled Function..");
-  });
-
-async function sendSMS(messageBody = null) {
-  const accountSid = "AC257e59dd88d5194a4918038146b5892c";
-  const authToken = "c6e7d9c7d4899b3b2646d9fe1ddd0171";
-  const client = require("twilio")(accountSid, authToken);
-  try {
-    const message = client.messages.create({
-      body: messageBody ? messageBody : "This is a test message, eh?",
-      from: CA_COUNTRY_CODE + TWILIO_NUMBER,
-      to: CA_COUNTRY_CODE + PERSONAL_NUMBER,
-    });
-
-    console.log("Message sent with SID: " + message.sid);
-  } catch (e) {
-    console.log("Error sending message - ", e);
-  }
-  return null;
-}
+  return await client.messages.create({
+    body: messageBody,
+    from: CA_COUNTRY_CODE + TWILIO_NUMBER,
+    to: CA_COUNTRY_CODE + PERSONAL_NUMBER,
+  }).sid;
+};
