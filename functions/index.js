@@ -31,7 +31,6 @@ async function getMarketRate() {
     return responseData.data;
   });
 
-  // response.json({ marketRate: data[queryParam] });
   return data[queryParam];
 }
 
@@ -47,7 +46,9 @@ async function getMoneyGramRate() {
     waitUntil: "domcontentloaded",
     timeout: 30000,
   });
+
   await page.waitForSelector("#send");
+
   await page.evaluate(() => {
     try {
       document.querySelector("#truste-consent-track").style.display = "none";
@@ -73,55 +74,62 @@ async function getMoneyGramRate() {
   await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
 
-  // await page.screenshot({ path: "example.png" });
-
   await page.waitForSelector("#receiveAmount");
+
   const mgRate = await page.evaluate(() => {
     return document.querySelector("#receiveAmount").value;
   });
+
   await browser.close();
 
   return mgRate;
 }
 
-exports.getBothRates = functions.https.onRequest(async (req, response) => {
-  let mgRate = await getMoneyGramRate();
-  let marketRate = await getMarketRate();
+exports.lookUpMarketRates = functions.pubsub
+  .schedule("15 8 * * *")
+  .onRun(async () => {
+    console.log("Beginning Scheduled Function..");
 
-  marketRate = marketRate.toPrecision(4);
-  mgRate = Number(mgRate).toPrecision(4);
+    let mgRate = await getMoneyGramRate();
+    let marketRate = await getMarketRate();
 
-  const rateDiff = (marketRate - mgRate).toPrecision(3);
+    marketRate = marketRate.toPrecision(4);
+    mgRate = Number(mgRate).toPrecision(4);
 
-  if (rateDiff < 0.75) {
-    let standardMessage = `Market Rate: Rs.${marketRate}, MoneyGram Rate: Rs.${mgRate}(Rate diff:${rateDiff}). `;
+    const rateDiff = (marketRate - mgRate).toPrecision(3);
 
-    if (rateDiff < 0.5) {
-      ///store doc
-      const result = await admin
-        .firestore()
-        .collection("forex-rates")
-        .add({ marketRate, moneyGramRate: mgRate, rateDiff });
+    if (rateDiff < 0.75) {
+      let standardMessage = `Market Rate: Rs.${marketRate}, MoneyGram Rate: Rs.${mgRate}(Rate diff:${rateDiff}). `;
 
-      standardMessage += `Stored data in Firestore document ${result.id}`;
+      if (rateDiff < 0.5) {
+        ///store doc
+        const result = await admin
+          .firestore()
+          .collection("forex-rates")
+          .add({ marketRate, moneyGramRate: mgRate, rateDiff });
+
+        standardMessage += `Stored data in Firestore document ${result.id}`;
+      }
+
+      await sendSMS(standardMessage);
     }
+    console.log("Ending Scheduled Function..");
+  });
 
-    await sendSMS(standardMessage);
-  }
-
-  response.json({ diff: rateDiff, marketRate, mgRate });
-});
-
-async function sendSMS(message = null) {
+async function sendSMS(messageBody = null) {
   const accountSid = "AC257e59dd88d5194a4918038146b5892c";
   const authToken = "c6e7d9c7d4899b3b2646d9fe1ddd0171";
   const client = require("twilio")(accountSid, authToken);
-
-  client.messages
-    .create({
-      body: message ?? "This is a test message, eh?",
+  try {
+    const message = client.messages.create({
+      body: messageBody ? messageBody : "This is a test message, eh?",
       from: CA_COUNTRY_CODE + TWILIO_NUMBER,
       to: CA_COUNTRY_CODE + PERSONAL_NUMBER,
-    })
-    .then((message) => console.log("Message sent with SID: " + message.sid));
+    });
+
+    console.log("Message sent with SID: " + message.sid);
+  } catch (e) {
+    console.log("Error sending message - ", e);
+  }
+  return null;
 }

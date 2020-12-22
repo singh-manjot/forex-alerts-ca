@@ -49,9 +49,7 @@ exports.deleteAllMessages = functions.https.onRequest(async (req, res) => {
       for (let ref of documentRefs) {
         ref.delete();
       }
+      return null;
     });
   res.json({ result: "Done" });
 });
-
-
-
