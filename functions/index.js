@@ -29,7 +29,7 @@ exports.lookUpMarketRates = functions.pubsub
       console.log(`Rate difference is good(${rateDiff}), sending SMS...`);
       return sendSMS(standardMessage);
     } else {
-      console.log("Rate Difference not good enough, no SMS sent.");
+      console.log(`Rate Difference(Rs. ${marketRate} - Rs. ${mgRate} = ${rateDiff}) not good enough, no SMS sent.`);
       return 0;
     }
   });
